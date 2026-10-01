@@ -1,0 +1,7 @@
+* text=auto
+
+# 脚本行尾固定，避免跨平台执行失败
+*.sh text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.py text eol=lf
