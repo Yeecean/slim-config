@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location "$scriptDir\backend"
 
-Write-Host "Slim Config v1.0.0" -ForegroundColor Cyan
+Write-Host "Slim Config v1.1.0" -ForegroundColor Cyan
 Write-Host ""
 
 try {

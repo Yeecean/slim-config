@@ -34,19 +34,29 @@
 
 ### 2.1 GET /api/status — 服务器状态
 
-检测后端是否就绪，获取配置路径信息。
+检测后端是否就绪，获取配置路径信息与 OpenCode Host 探测结果。
 
 ```json
 {
   "ok": true,
   "data": {
-    "version": "1.0.0",
+    "version": "1.1.0",
     "config_dir": "C:\\Users\\Haoyang\\.config\\opencode",
     "slim_config_path": "C:\\Users\\Haoyang\\.config\\opencode\\oh-my-opencode-slim.json",
-    "opencode_config_path": "C:\\Users\\Haoyang\\.config\\opencode\\opencode.jsonc"
+    "opencode_config_path": "C:\\Users\\Haoyang\\.config\\opencode\\opencode.jsonc",
+    "opencode_format": "v2",
+    "host": {
+      "cli": "opencode2",
+      "version": "2.0.7",
+      "format": "v2"
+    }
   }
 }
 ```
+
+- `opencode_format`: `opencode.jsonc` 的实际格式（`v1` = 顶层 `provider` 单数；`v2` = 顶层 `providers` 复数）
+- `host`: 探测到的 OpenCode CLI（依次尝试 `opencode2` / `opencode --version`），未安装时三个字段均为 `null`
+- 前端应在 v2 host 下保存成功后提示「推理字段热更新生效；Agent 定义/提示词/Skills/MCP 变更需 reload OpenCode」
 
 ---
 

@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 > nul
 cd /d "%~dp0backend"
-echo Slim Config v1.0.0
+echo Slim Config v1.1.0
 echo.
 python main.py
 if errorlevel 1 (

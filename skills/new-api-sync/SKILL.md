@@ -49,6 +49,8 @@ Content-Type: application/json
 }
 ```
 
+> **OpenCode v1/v2 双格式**：v1 配置顶层为 `provider`（单数），端点/密钥在 `options`；v2 为 `providers`（复数），端点/密钥在 `settings`。同步接口会自动按文件实际格式定位 `new-api` 节点并注入，无需前端感知差异。
+
 ### 获取模型差异
 
 ```

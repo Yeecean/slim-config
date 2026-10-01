@@ -19,8 +19,9 @@ import {
 // ── Types ──────────────────────────────────────────────────────────
 
 interface AgentConfig {
-  model: string;
-  variant: 'high' | 'medium' | 'low';
+  // omo-slim v2.2.25 起 model 还兼容 {id, variant} 对象与数组(fallback 链),未编辑时原样透传
+  model: any;
+  variant: string;
   temperature: number;
   skills: string[];
   mcps: string[];
@@ -60,11 +61,19 @@ interface Provider {
   models: ProviderModel[];
 }
 
+interface HostInfo {
+  cli: string | null;
+  version: string | null;
+  format: 'v1' | 'v2' | null;
+}
+
 interface ServerStatus {
   version: string;
   config_dir: string;
   slim_config_path: string;
   opencode_config_path: string;
+  opencode_format?: 'v1' | 'v2';
+  host?: HostInfo | null;
 }
 
 // ── Built-in Agents metadata ────────────────────────────────────────
@@ -472,9 +481,12 @@ export default function App() {
       })
       const data = await res.json()
       if (data.ok) {
-        showToast('配置保存成功！', 'success')
-        // Update saved config state
         setSavedConfig(JSON.parse(JSON.stringify(draftConfig)))
+        if (status?.host?.format === 'v2') {
+          showToast('配置保存成功！v2 下模型/变体/温度等推理字段热更新生效；Agent 定义、提示词与 Skills/MCP 变更需 reload OpenCode 后生效。', 'success')
+        } else {
+          showToast('配置保存成功！', 'success')
+        }
       } else {
         showToast(data.error || '保存失败', 'error')
       }
@@ -847,6 +859,17 @@ export default function App() {
 
   // ── Render Helpers ─────────────────────────────────────────────────
 
+  // model 兼容 string / {id} / 数组(fallback 链),取首个 id 用于展示
+  const modelToId = (model: any): string => {
+    if (typeof model === 'string') return model
+    if (Array.isArray(model) && model.length > 0) return modelToId(model[0])
+    if (model && typeof model === 'object' && typeof model.id === 'string') return model.id
+    return ''
+  }
+
+  const isModelChain = (model: any): boolean =>
+    Array.isArray(model) || (!!model && typeof model === 'object')
+
   const renderModelSelector = (modelValue: string, onSelect: (val: string) => void) => {
     return (
       <SearchableModelSelect 
@@ -865,7 +888,13 @@ export default function App() {
           <label className="block text-xs font-semibold text-apple-secondary mb-1.5 uppercase tracking-wider">
             分配模型 (Model)
           </label>
-          {renderModelSelector(agent.model, (val) => updateField('model', val))}
+          {renderModelSelector(modelToId(agent.model), (val) => updateField('model', val))}
+          {isModelChain(agent.model) && (
+            <p className="text-[11px] text-amber-600 mt-1.5 flex items-center gap-1">
+              <AlertTriangle size={12} />
+              当前为 fallback 链模型（多模型/对象形式），GUI 暂只支持单模型编辑；重新选择将覆盖为单模型。
+            </p>
+          )}
         </div>
 
         {/* Variant */}
@@ -889,6 +918,13 @@ export default function App() {
               </button>
             ))}
           </div>
+          <input
+            type="text"
+            placeholder="自定义变体，如 max / none / default（omo-slim v2.2+ 支持任意字符串）"
+            value={agent.variant ?? ''}
+            onChange={(e) => updateField('variant', e.target.value)}
+            className="mt-2 w-full text-xs border border-apple-border rounded-btn p-2 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
+          />
         </div>
 
         {/* Temperature */}
@@ -1040,6 +1076,20 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {status?.host?.format && (
+            <span
+              className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium border ${
+                status.host.format === 'v2'
+                  ? 'text-indigo-600 bg-indigo-50 border-indigo-100'
+                  : 'text-slate-600 bg-slate-50 border-slate-200'
+              }`}
+              title={status.opencode_format ? `配置文件格式：${status.opencode_format === 'v2' ? 'providers (v2)' : 'provider (v1)'}` : undefined}
+            >
+              <span className={`w-2 h-2 rounded-full ${status.host.format === 'v2' ? 'bg-indigo-500' : 'bg-slate-400'}`}></span>
+              OpenCode {status.host.format.toUpperCase()}
+              {status.host.version ? ` · ${status.host.version}` : ''}
+            </span>
+          )}
           <span className="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-full font-medium">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
             后端服务正常运行中
@@ -1133,7 +1183,7 @@ export default function App() {
                 后端版本
               </span>
               <span className="text-xs text-apple-text font-semibold">
-                v{status?.version || '1.0.0'}
+                v{status?.version || '1.1.0'}
               </span>
             </div>
             
@@ -1351,7 +1401,7 @@ export default function App() {
                               {aName}
                             </span>
                             <span className="text-[10px] text-apple-secondary block mt-0.5 truncate w-[160px]">
-                              {agentObj.model || '未分配模型'}
+                              {modelToId(agentObj.model) || '未分配模型'}
                             </span>
                           </div>
                           <button
@@ -1672,7 +1722,7 @@ export default function App() {
                 <div className="grid grid-cols-3 gap-4">
                   <div className="bg-slate-50 p-4 rounded-card border border-apple-border space-y-1">
                     <span className="block text-[10px] font-bold text-apple-secondary uppercase">版本信息</span>
-                    <span className="block text-sm font-bold text-apple-text">v{status?.version || '1.0.0'}</span>
+                    <span className="block text-sm font-bold text-apple-text">v{status?.version || '1.1.0'}</span>
                   </div>
                   <div className="bg-slate-50 p-4 rounded-card border border-apple-border space-y-1">
                     <span className="block text-[10px] font-bold text-apple-secondary uppercase">后端架构</span>
@@ -1700,6 +1750,24 @@ export default function App() {
                       </code>
                     </div>
                     <div>
+                      <span className="block font-semibold text-apple-secondary">检测到的 OpenCode Host</span>
+                      <code className="block bg-white p-2 rounded border border-apple-border font-mono text-[11px] select-all break-all mt-1">
+                        {status?.host?.format
+                          ? `${status.host.cli || 'opencode'} · ${status.host.format.toUpperCase()}${status.host.version ? ` · ${status.host.version}` : ''}`
+                          : '未检测到 OpenCode CLI（不影响配置读写，仅模型聚合与格式探测降级）'}
+                      </code>
+                    </div>
+                    <div>
+                      <span className="block font-semibold text-apple-secondary">配置文件格式</span>
+                      <code className="block bg-white p-2 rounded border border-apple-border font-mono text-[11px] select-all break-all mt-1">
+                        {status?.opencode_format === 'v2'
+                          ? 'providers (OpenCode v2)'
+                          : status?.opencode_format === 'v1'
+                            ? 'provider (OpenCode v1)'
+                            : '未知（opencode.jsonc 不存在或为空）'}
+                      </code>
+                    </div>
+                    <div>
                       <span className="block font-semibold text-apple-secondary">OpenCode 基础文件 (Read Only)</span>
                       <code className="block bg-white p-2 rounded border border-apple-border font-mono text-[11px] select-all break-all mt-1">
                         {status?.opencode_config_path}
@@ -1715,6 +1783,9 @@ export default function App() {
                   </h4>
                   <p>
                     每次点击「保存修改」或「立即校验」时，后端将会对温度 (temperature)、变体 (variant) 以及伴侣的动画速率 (speed)、位置 (position) 等进行严格的值域审查。对于不合法的值将拒绝写入并提供明细报错。
+                  </p>
+                  <p>
+                    后端同时兼容 OpenCode v1（provider 单数）与 v2（providers 复数）的基础配置格式，模型聚合与 New-API 同步会按文件实际格式自动读写。
                   </p>
                   <p>
                     如果希望直接编辑 JSON 格式，您也可以使用支持 JSONC 语法格式的 IDE（如 VS Code）直接打开并编辑上述路径中的配置文件。

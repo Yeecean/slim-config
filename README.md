@@ -91,40 +91,38 @@ slim-config/
 | --- | --- | --- |
 | Python | 3.10+ | 必需（运行后端） |
 | Node.js | 20+ | 仅构建/开发前端时需要 |
-| OpenCode | **1.17+（仅 v1.x）**，见[版本兼容性](#opencode-版本兼容性) | 可选（启用 `opencode models` 模型聚合） |
+| OpenCode | 1.17+ 或 v2（2.0.7+），见[版本兼容性](#opencode-版本兼容性) | 可选（启用 `opencode models` 模型聚合与 Host 探测） |
 | New-API 面板 | — | 可选（启用模型同步功能） |
 
 > 仓库已内置 `backend/static/` 前端构建产物，**普通用户无需安装 Node.js** 即可使用。
 
 ## OpenCode 版本兼容性
 
-> **当前版本仅适配 OpenCode 1.x，不支持 OpenCode v2（2.x）。**
+> **自 v1.1.0 起，本工具同时兼容 OpenCode 1.x 与 v2（2.x），自动按配置文件实际格式读写。**
 
 | OpenCode 版本 | 支持情况 | 说明 |
 | --- | --- | --- |
-| 1.17.x | ✅ 开发验证基准 | omo-slim 插件基于 `@opencode-ai/plugin@1.17.13` 插件 API 构建 |
-| 1.18.x | ✅ 推荐 | 1.x 系列当前维护线（最新 v1.18.34），以缺陷修复为主 |
-| v2（2.x，当前 2.0.6） | ❌ 暂不支持 | v2 重构了 provider 配置 schema，详见下文 |
+| 1.17.x / 1.18.x | ✅ 完整支持 | v1 格式：顶层 `provider`（单数），端点与密钥位于 `options` |
+| v2（2.x） | ✅ 支持 | v2 格式：顶层 `providers`（复数），端点与密钥位于 `settings`；omo-slim 插件自 v2.2.25 起官方适配 v2（要求 host v2.0.7+） |
+| 未安装 OpenCode | ✅ 可用 | 配置读写不依赖 CLI；仅 `opencode models` 模型聚合与 Host 探测静默降级 |
 
-### 为什么暂不支持 v2
+### 双格式自适应说明
 
-OpenCode v2 对 provider 配置做了破坏性重构，与本项目和 omo-slim 插件依赖的 1.x 格式不兼容：
+后端读取 `opencode.jsonc` 时自动探测顶层是 `provider`（v1）还是 `providers`（v2），归一化为统一内部表示后再聚合与同步；写回时按原格式选择节点与模板：
 
-| 配置项 | OpenCode 1.x（本项目适配） | OpenCode v2 |
+| 配置项 | OpenCode 1.x | OpenCode v2 |
 | --- | --- | --- |
 | 顶层字段 | `provider`（单数） | `providers`（复数） |
 | 端点 / 密钥 | `provider.<id>.options.baseURL` / `options.apiKey` | `providers.<id>.settings.baseURL` / `settings.apiKey` |
-| CLI 分发包 | `npm i -g opencode-ai` | `npm i -g @opencode/cli`（独立安装脚本 / `opencode-v2` brew tap） |
-| 部分 provider ID | `google-vertex-anthropic` 等 | v2 直接拒绝，强制使用新 ID |
+| CLI 分发包 | `npm i -g opencode-ai` | `npm i -g @opencode/cli`（命令名 `opencode2` / `opencode`，自动探测） |
+| 配置根目录 | `~/.config/opencode/` | 相同（v1/v2 共用，`~/.config/opencode2/` 不被读取） |
 
-受影响的功能：
+受影响功能的表现：
 
-- **模型列表读取**：后端从 `opencode.jsonc` 的 `provider`（单数）节点读取渠道与模型，在 v2 格式下读取结果为空
-- **New-API 同步**：依赖 `provider.new-api.options.baseURL/apiKey` 定位远端面板，并按 1.x 结构注入模型，v2 下无法定位配置节点
-- **omo-slim 插件**：基于 1.x 插件 API 开发，在 v2 插件运行时中的兼容性尚未验证
-- **不受影响**：`oh-my-opencode-slim.json` 的读写（presets / agents / companion）是纯文件操作，不依赖 OpenCode 版本，但需要能正常加载 omo-slim 插件才有意义
-
-v2 适配计划：待 omo-slim 插件确认 v2 插件 API 兼容性后，让后端同时识别 `provider` / `providers` 双格式。如你在 v2 下遇到问题，欢迎提交 issue 反馈。
+- **模型列表读取 / New-API 同步**：按文件实际格式定位 `new-api` 节点（v1: `provider.new-api.options`，v2: `providers.new-api.settings`），模型注入同样按原格式写入并保留 JSONC 注释
+- **omo-slim 配置（oh-my-opencode-slim.json）**：与 host 版本无关；校验器已兼容 omo-slim v2.2.25 的新 schema（`model` 数组/对象 fallback 链、`extends` 继承、`variant` 自由字符串、`skills_add/remove`、`permission`、`displayName/color` 等），`multiplexer` / `backgroundJobs` 等高级字段透传不拦截
+- **v2 热更新**：v2 host 下保存后，preset 中的模型/变体/温度等推理字段由 OpenCode 配置监视器热应用（约 300ms）；Agent 定义、提示词与 Skills/MCP 变更需 reload OpenCode 后生效
+- **部分 provider ID**：v2 拒绝 `google-vertex-anthropic` 等旧 ID（须改用 `google-vertex`），本工具的同步/注入不涉及此限制，但手工迁移配置时需注意
 
 ## 快速开始（Windows）
 

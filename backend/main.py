@@ -1,6 +1,7 @@
 import argparse
 import os
-import sys
+import re
+import shutil
 import webbrowser
 
 import uvicorn
@@ -8,7 +9,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from opencode_reader import read_providers, fetch_new_api_models, diff_models, get_new_api_config
+from opencode_reader import (
+    read_providers, fetch_new_api_models, diff_models, get_new_api_config,
+    detect_format, detect_host, get_config_format,
+)
 import json5
 import json
 from slim_config import read_config, write_config, validate_config
@@ -16,12 +20,17 @@ from model_metadata import get_model_metadata, detect_vision, REASONING_LEVELS
 
 _config_dir = os.environ.get("SLIM_CONFIG_DIR") or os.path.expanduser("~/.config/opencode")
 _uvicorn_server = None
+_VERSION = "1.1.0"
 
-app = FastAPI(title="Slim Config", version="1.0.0")
+app = FastAPI(title="Slim Config", version=_VERSION)
 
+# 生产模式前后端同源,无需 CORS;仅放行本地开发服务器,防止任意网页驱动本机配置写入
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173", "http://127.0.0.1:5173",
+        "http://localhost:5174", "http://127.0.0.1:5174",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -35,16 +44,34 @@ def err(msg, status=400):
     return JSONResponse({"ok": False, "error": msg}, status_code=status)
 
 
+def _write_opencode_config(path, raw_text):
+    # 写入前备份,与 slim_config.write_config 的 .bak 机制保持一致
+    if os.path.exists(path):
+        shutil.copy2(path, path + ".bak")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(raw_text)
+
+
+def _fragment_error(payload):
+    """校验写入片段;只校验片段本身,避免旧配置既有错误阻塞写路径。"""
+    errors = validate_config(payload)
+    if errors:
+        return err(f"校验失败：{errors[0]}")
+    return None
+
+
 # ── Status ──────────────────────────────────────────────────────────
 
 
 @app.get("/api/status")
 async def get_status():
     return ok({
-        "version": "1.0.0",
+        "version": _VERSION,
         "config_dir": _config_dir,
         "slim_config_path": os.path.join(_config_dir, "oh-my-opencode-slim.json"),
         "opencode_config_path": os.path.join(_config_dir, "opencode.jsonc"),
+        "opencode_format": get_config_format(_config_dir),
+        "host": detect_host(),
     })
 
 
@@ -60,7 +87,7 @@ async def get_providers():
 async def get_sync_diff():
     remote = fetch_new_api_models(_config_dir)
     if remote is None:
-        return err("无法连接 New-API，请检查 opencode.jsonc 中 new-api 的配置")
+        return err("无法连接 New-API，请检查 opencode 配置文件中 new-api 节点的配置（v1: provider.new-api / v2: providers.new-api）")
     result = diff_models(_config_dir, remote)
     return ok(result)
 
@@ -75,13 +102,16 @@ async def apply_sync(data: dict):
     with open(opencode_path, "r", encoding="utf-8") as f:
         raw = f.read()
     cfg = json5.loads(raw)
+    root_key = "providers" if detect_format(cfg) == "v2" else "provider"
 
-    new_api = cfg.setdefault("provider", {}).setdefault("new-api", {})
+    new_api = cfg.setdefault(root_key, {}).setdefault("new-api", {})
     models = new_api.setdefault("models", {})
     
     added = []
     for item in to_add:
         mid = item.get("id") if isinstance(item, dict) else item
+        if not isinstance(mid, str) or not mid:
+            continue
         if mid not in models:
             models[mid] = {"name": mid}
             added.append(mid)
@@ -89,23 +119,23 @@ async def apply_sync(data: dict):
     if not added:
         return ok({"message": "没有需要添加的新模型"})
 
-    import re
-    new_api_idx = re.search(r'["\']new-api["\']\s*:\s*\{', raw)
+    # 先定位 provider(s) 根节点再找 new-api,避免误匹配其他位置的 new-api 键
+    root_match = re.search(r'["\']' + root_key + r'["\']\s*:\s*\{', raw)
+    search_from = root_match.end() if root_match else 0
+    new_api_idx = re.search(r'["\']new-api["\']\s*:\s*\{', raw[search_from:])
     if new_api_idx:
-        models_match = re.search(r'["\']models["\']\s*:\s*\{', raw[new_api_idx.end():])
+        models_match = re.search(r'["\']models["\']\s*:\s*\{', raw[search_from + new_api_idx.end():])
         if models_match:
-            insert_pos = new_api_idx.end() + models_match.end()
+            insert_pos = search_from + new_api_idx.end() + models_match.end()
             insert_str = ""
             for mid in added:
-                insert_str += f'\n        "{mid}": {{"name": "{mid}"}},'
+                insert_str += "\n        " + json.dumps(mid, ensure_ascii=False) + ': ' + json.dumps({"name": mid}, ensure_ascii=False) + ','
             raw = raw[:insert_pos] + insert_str + raw[insert_pos:]
-            with open(opencode_path, "w", encoding="utf-8") as f:
-                f.write(raw)
+            _write_opencode_config(opencode_path, raw)
             return ok({"message": f"已添加 {len(added)} 个模型 (保留了注释)"})
     
     # Fallback to json.dumps if regex fails
-    with open(opencode_path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
+    _write_opencode_config(opencode_path, json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
 
     return ok({"message": f"已添加 {len(added)} 个模型 (由于正则不匹配，部分注释可能丢失)"})
 
@@ -121,17 +151,19 @@ async def remove_sync_models(data: dict):
     with open(opencode_path, "r", encoding="utf-8") as f:
         raw = f.read()
     cfg = json5.loads(raw)
-    models = cfg.get("provider", {}).get("new-api", {}).get("models", {})
+    root_key = "providers" if detect_format(cfg) == "v2" else "provider"
+    models = cfg.get(root_key, {}).get("new-api", {}).get("models", {})
     removed = []
     for item in to_remove:
         mid = item.get("id") if isinstance(item, dict) else item
+        if not isinstance(mid, str) or not mid:
+            continue
         if mid in models:
             del models[mid]
             removed.append(mid)
     if not removed:
         return ok({"message": "没有需要删除的模型"})
-    with open(opencode_path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
+    _write_opencode_config(opencode_path, json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
     return ok({"message": f"已删除 {len(removed)} 个模型", "removed": removed})
 
 
@@ -176,13 +208,11 @@ async def put_opencode_config(data: dict):
             json5.loads(raw)
         except Exception as e:
             return err(f"内容不是有效的 JSON5: {e}")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(raw)
+        _write_opencode_config(path, raw)
         return ok({"message": "opencode.jsonc 已保存"})
     parsed = data.get("parsed")
     if parsed is not None:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n")
+        _write_opencode_config(path, json.dumps(parsed, ensure_ascii=False, indent=2) + "\n")
         return ok({"message": "opencode.jsonc 已保存"})
     return err("请提供 raw（原始内容）或 parsed（JSON 对象）")
 
@@ -206,27 +236,55 @@ async def put_config(data: dict):
     return ok({"message": "配置已保存"})
 
 
+def _iter_agent_configs(data):
+    """产出 (preset 名, agent 名, 配置),兼容新旧两种 preset 形态。"""
+    presets = data.get("presets", {})
+    if isinstance(presets, dict):
+        for pname, preset in presets.items():
+            if not isinstance(preset, dict):
+                continue
+            agents = preset.get("agents")
+            if isinstance(agents, dict):
+                for aname, acfg in agents.items():
+                    if isinstance(acfg, dict):
+                        yield pname, aname, acfg
+            for aname, acfg in preset.items():
+                if aname not in ("extends", "agents", "marketplace") and isinstance(acfg, dict):
+                    yield pname, aname, acfg
+    agents = data.get("agents", {})
+    if isinstance(agents, dict):
+        for aname, acfg in agents.items():
+            if isinstance(acfg, dict):
+                yield None, aname, acfg
+
+
+def _model_string(model):
+    """model 兼容 string / {id} / 数组(fallback 链),取第一个可用 id。"""
+    if isinstance(model, str):
+        return model
+    if isinstance(model, list) and model:
+        return _model_string(model[0])
+    if isinstance(model, dict):
+        mid = model.get("id")
+        return mid if isinstance(mid, str) else None
+    return None
+
+
 @app.post("/api/validate")
 async def validate(data: dict):
     errors = validate_config(data)
     warnings = []
 
-    presets = data.get("presets", {})
-    if isinstance(presets, dict):
-        for pname, agents in presets.items():
-            if not isinstance(agents, dict):
-                continue
-            for aname, acfg in agents.items():
-                if not isinstance(acfg, dict):
-                    continue
-                model = acfg.get("model")
-                if model and aname == "observer":
-                    model_id = model.split("/", 1)[-1] if "/" in model else model
-                    if not detect_vision(model_id):
-                        warnings.append(
-                            f"提示：presets「{pname}」→ 「{aname}」的模型「{model}」可能不支持视觉能力，"
-                            f"observer 角色建议使用支持 vision 的模型"
-                        )
+    for pname, aname, acfg in _iter_agent_configs(data):
+        model = _model_string(acfg.get("model"))
+        if model and aname == "observer":
+            model_id = model.split("/", 1)[-1] if "/" in model else model
+            if not detect_vision(model_id):
+                where = f"presets「{pname}」" if pname else "agents"
+                warnings.append(
+                    f"提示：{where} → 「{aname}」的模型「{model}」可能不支持视觉能力，"
+                    f"observer 角色建议使用支持 vision 的模型"
+                )
 
     if errors:
         return err(f"{errors[0]}")
@@ -267,6 +325,11 @@ async def create_preset(data: dict):
     cfg = read_config(_config_dir)
     if name in cfg.get("presets", {}):
         return err(f"Preset 「{name}」已存在")
+    presets_ctx = {k: {} for k in cfg.get("presets", {})}
+    presets_ctx[name] = agents
+    invalid = _fragment_error({"presets": presets_ctx})
+    if invalid:
+        return invalid
     cfg.setdefault("presets", {})[name] = agents
     write_config(_config_dir, cfg)
     return ok({"message": f"Preset 「{name}」已创建"})
@@ -277,6 +340,11 @@ async def update_preset(name: str, data: dict):
     cfg = read_config(_config_dir)
     if name not in cfg.get("presets", {}):
         return err(f"Preset 「{name}」不存在")
+    presets_ctx = {k: {} for k in cfg.get("presets", {})}
+    presets_ctx[name] = data
+    invalid = _fragment_error({"presets": presets_ctx})
+    if invalid:
+        return invalid
     cfg["presets"][name] = data
     write_config(_config_dir, cfg)
     return ok({"message": f"Preset 「{name}」已更新"})
@@ -305,6 +373,9 @@ async def get_agents():
 
 @app.put("/api/agents/{name}")
 async def update_agent(name: str, data: dict):
+    invalid = _fragment_error({"agents": {name: data}})
+    if invalid:
+        return invalid
     cfg = read_config(_config_dir)
     cfg.setdefault("agents", {})[name] = data
     write_config(_config_dir, cfg)
@@ -331,6 +402,9 @@ async def get_companion():
 
 @app.put("/api/companion")
 async def update_companion(data: dict):
+    invalid = _fragment_error({"companion": data})
+    if invalid:
+        return invalid
     cfg = read_config(_config_dir)
     cfg["companion"] = data
     write_config(_config_dir, cfg)
@@ -392,7 +466,7 @@ def main():
         _config_dir = os.path.abspath(config_dir)
 
     url = f"http://{args.host}:{args.port}"
-    print(f"Slim Config v1.0.0")
+    print(f"Slim Config v{_VERSION}")
     print(f"配置目录: {_config_dir}")
     print(f"访问地址: {url}")
     print()

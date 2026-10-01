@@ -7,7 +7,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$script_dir"
 
-echo "Slim Config v1.0.0"
+echo "Slim Config v1.1.0"
 echo
 
 if ! command -v python3 >/dev/null 2>&1; then
