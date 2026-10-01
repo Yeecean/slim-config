@@ -17,6 +17,7 @@
 - [功能特性](#功能特性)
 - [架构总览](#架构总览)
 - [环境要求](#环境要求)
+- [OpenCode 版本兼容性](#opencode-版本兼容性)
 - [快速开始（Windows）](#快速开始windows)
 - [快速开始（Linux / macOS）](#快速开始linux--macos)
 - [前端开发模式](#前端开发模式)
@@ -90,10 +91,40 @@ slim-config/
 | --- | --- | --- |
 | Python | 3.10+ | 必需（运行后端） |
 | Node.js | 20+ | 仅构建/开发前端时需要 |
-| OpenCode CLI | 最新版 | 可选（启用 `opencode models` 模型聚合） |
+| OpenCode | **1.17+（仅 v1.x）**，见[版本兼容性](#opencode-版本兼容性) | 可选（启用 `opencode models` 模型聚合） |
 | New-API 面板 | — | 可选（启用模型同步功能） |
 
 > 仓库已内置 `backend/static/` 前端构建产物，**普通用户无需安装 Node.js** 即可使用。
+
+## OpenCode 版本兼容性
+
+> **当前版本仅适配 OpenCode 1.x，不支持 OpenCode v2（2.x）。**
+
+| OpenCode 版本 | 支持情况 | 说明 |
+| --- | --- | --- |
+| 1.17.x | ✅ 开发验证基准 | omo-slim 插件基于 `@opencode-ai/plugin@1.17.13` 插件 API 构建 |
+| 1.18.x | ✅ 推荐 | 1.x 系列当前维护线（最新 v1.18.34），以缺陷修复为主 |
+| v2（2.x，当前 2.0.6） | ❌ 暂不支持 | v2 重构了 provider 配置 schema，详见下文 |
+
+### 为什么暂不支持 v2
+
+OpenCode v2 对 provider 配置做了破坏性重构，与本项目和 omo-slim 插件依赖的 1.x 格式不兼容：
+
+| 配置项 | OpenCode 1.x（本项目适配） | OpenCode v2 |
+| --- | --- | --- |
+| 顶层字段 | `provider`（单数） | `providers`（复数） |
+| 端点 / 密钥 | `provider.<id>.options.baseURL` / `options.apiKey` | `providers.<id>.settings.baseURL` / `settings.apiKey` |
+| CLI 分发包 | `npm i -g opencode-ai` | `npm i -g @opencode/cli`（独立安装脚本 / `opencode-v2` brew tap） |
+| 部分 provider ID | `google-vertex-anthropic` 等 | v2 直接拒绝，强制使用新 ID |
+
+受影响的功能：
+
+- **模型列表读取**：后端从 `opencode.jsonc` 的 `provider`（单数）节点读取渠道与模型，在 v2 格式下读取结果为空
+- **New-API 同步**：依赖 `provider.new-api.options.baseURL/apiKey` 定位远端面板，并按 1.x 结构注入模型，v2 下无法定位配置节点
+- **omo-slim 插件**：基于 1.x 插件 API 开发，在 v2 插件运行时中的兼容性尚未验证
+- **不受影响**：`oh-my-opencode-slim.json` 的读写（presets / agents / companion）是纯文件操作，不依赖 OpenCode 版本，但需要能正常加载 omo-slim 插件才有意义
+
+v2 适配计划：待 omo-slim 插件确认 v2 插件 API 兼容性后，让后端同时识别 `provider` / `providers` 双格式。如你在 v2 下遇到问题，欢迎提交 issue 反馈。
 
 ## 快速开始（Windows）
 
